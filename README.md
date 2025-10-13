@@ -1,5 +1,7 @@
 # Seq2Seq LSTM vs VAE for Learning Behavior Prediction
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Qmo37/Seq2Seq_LSTM_VAE/blob/main/notebooks/main_experiment.ipynb)
+
 This project compares Seq2Seq LSTM and Seq2Seq VAE models for generating future learning behavior sequences using the Open University Learning Analytics Dataset (OULAD).
 
 ## Project Goal
@@ -68,16 +70,14 @@ Seq2Seq_LSTM_VAE/
 
 ### For Google Colab (Recommended)
 
-1. **Open the notebook directly from GitHub**:
-   - Go to [Google Colab](https://colab.research.google.com/)
-   - Click "File" → "Open notebook" → "GitHub" tab
-   - Enter repository URL: `https://github.com/YOUR_USERNAME/Seq2Seq_LSTM_VAE`
-   - Open `notebooks/main_experiment.ipynb`
+**Click the "Open in Colab" button above** or click here: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Qmo37/Seq2Seq_LSTM_VAE/blob/main/notebooks/main_experiment.ipynb)
 
-2. **Run the notebook**:
-   - The notebook will automatically download the OULAD dataset (Section 0)
-   - Run all cells to train both models and generate results
-   - All dependencies will be installed automatically
+Then:
+- The notebook will automatically download the OULAD dataset (Section 0)
+- Run all cells to train both models and generate results
+- All dependencies will be installed automatically
+
+No setup required! Everything runs in the cloud.
 
 ### For Local Development
 
