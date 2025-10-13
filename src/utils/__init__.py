@@ -4,8 +4,14 @@ from .metrics import (
     compute_best_of_n_mse,
     compute_diversity,
     compute_coverage,
+    evaluate_model,
 )
-from .visualization import plot_predictions, plot_training_curves, plot_comparison
+from .visualization import (
+    plot_predictions,
+    plot_training_curves,
+    plot_comparison,
+    plot_diversity_analysis,
+)
 
 __all__ = [
     "train_lstm",
@@ -15,7 +21,9 @@ __all__ = [
     "compute_best_of_n_mse",
     "compute_diversity",
     "compute_coverage",
+    "evaluate_model",
     "plot_predictions",
     "plot_training_curves",
     "plot_comparison",
+    "plot_diversity_analysis",
 ]
