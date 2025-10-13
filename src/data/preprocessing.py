@@ -26,10 +26,12 @@ def load_oulad_data(data_path: str) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Data
     return student_info, student_vle, student_assessment
 
 
-def aggregate_weekly_features(student_info: pd.DataFrame,
-                              student_vle: pd.DataFrame,
-                              student_assessment: pd.DataFrame,
-                              max_weeks: int = 30) -> pd.DataFrame:
+def aggregate_weekly_features(
+    student_info: pd.DataFrame,
+    student_vle: pd.DataFrame,
+    student_assessment: pd.DataFrame,
+    max_weeks: int = 30,
+) -> pd.DataFrame:
     """
     Aggregate student activity data into weekly features.
 
@@ -50,60 +52,66 @@ def aggregate_weekly_features(student_info: pd.DataFrame,
         DataFrame with student_id, week, and all features
     """
     # Convert date to week number
-    student_vle['week'] = student_vle['date'] // 7
-    student_assessment['week'] = student_assessment['date'] // 7
+    student_vle["week"] = student_vle["date"] // 7
+    student_assessment["week"] = student_assessment["date_submitted"] // 7
 
     # Aggregate clicks per student per week
-    clicks_df = student_vle.groupby(['id_student', 'week'])['sum_click'].sum().reset_index()
-    clicks_df.columns = ['id_student', 'week', 'clicks']
+    clicks_df = (
+        student_vle.groupby(["id_student", "week"])["sum_click"].sum().reset_index()
+    )
+    clicks_df.columns = ["id_student", "week", "clicks"]
 
     # Aggregate submissions per student per week
-    submit_df = student_assessment.groupby(['id_student', 'week']).agg({
-        'score': ['count', 'mean']
-    }).reset_index()
-    submit_df.columns = ['id_student', 'week', 'submit_cnt', 'avg_score']
+    submit_df = (
+        student_assessment.groupby(["id_student", "week"])
+        .agg({"score": ["count", "mean"]})
+        .reset_index()
+    )
+    submit_df.columns = ["id_student", "week", "submit_cnt", "avg_score"]
 
     # Get unique student IDs
-    student_ids = student_info['id_student'].unique()
+    student_ids = student_info["id_student"].unique()
 
     # Create complete week grid for each student
     all_weeks = []
     for student_id in student_ids:
         for week in range(max_weeks):
-            all_weeks.append({'id_student': student_id, 'week': week})
+            all_weeks.append({"id_student": student_id, "week": week})
 
     df = pd.DataFrame(all_weeks)
 
     # Merge features
-    df = df.merge(clicks_df, on=['id_student', 'week'], how='left')
-    df = df.merge(submit_df, on=['id_student', 'week'], how='left')
+    df = df.merge(clicks_df, on=["id_student", "week"], how="left")
+    df = df.merge(submit_df, on=["id_student", "week"], how="left")
 
     # Fill missing values
-    df['clicks'] = df['clicks'].fillna(0)
-    df['submit_cnt'] = df['submit_cnt'].fillna(0)
-    df['avg_score'] = df['avg_score'].fillna(0)
+    df["clicks"] = df["clicks"].fillna(0)
+    df["submit_cnt"] = df["submit_cnt"].fillna(0)
+    df["avg_score"] = df["avg_score"].fillna(0)
 
     # Sort by student and week
-    df = df.sort_values(['id_student', 'week']).reset_index(drop=True)
+    df = df.sort_values(["id_student", "week"]).reset_index(drop=True)
 
     # Create derived features
-    df['has_submit'] = (df['submit_cnt'] > 0).astype(int)
+    df["has_submit"] = (df["submit_cnt"] > 0).astype(int)
 
     # Calculate cumulative average score per student
-    df['avg_score_sofar'] = df.groupby('id_student')['avg_score'].transform(
+    df["avg_score_sofar"] = df.groupby("id_student")["avg_score"].transform(
         lambda x: x.expanding().mean()
     )
 
     # Calculate first-order difference of clicks
-    df['clicks_diff1'] = df.groupby('id_student')['clicks'].diff().fillna(0)
+    df["clicks_diff1"] = df.groupby("id_student")["clicks"].diff().fillna(0)
 
     return df
 
 
-def create_sequences(df: pd.DataFrame,
-                    input_weeks: int = 4,
-                    output_weeks: int = 2,
-                    feature_cols: list = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def create_sequences(
+    df: pd.DataFrame,
+    input_weeks: int = 4,
+    output_weeks: int = 2,
+    feature_cols: list = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Create input-output sequences for sequence-to-sequence learning.
 
@@ -120,15 +128,15 @@ def create_sequences(df: pd.DataFrame,
         - student_ids: shape (n_samples,) - for train/test split
     """
     if feature_cols is None:
-        feature_cols = ['clicks', 'has_submit', 'avg_score_sofar', 'clicks_diff1']
+        feature_cols = ["clicks", "has_submit", "avg_score_sofar", "clicks_diff1"]
 
     X_list = []
     y_list = []
     student_id_list = []
 
     # Group by student
-    for student_id, group in df.groupby('id_student'):
-        group = group.sort_values('week').reset_index(drop=True)
+    for student_id, group in df.groupby("id_student"):
+        group = group.sort_values("week").reset_index(drop=True)
 
         # Skip students with insufficient data
         if len(group) < input_weeks + output_weeks:
@@ -137,10 +145,12 @@ def create_sequences(df: pd.DataFrame,
         # Create sliding windows
         for i in range(len(group) - input_weeks - output_weeks + 1):
             # Input: past input_weeks
-            X_window = group.iloc[i:i+input_weeks][feature_cols].values
+            X_window = group.iloc[i : i + input_weeks][feature_cols].values
 
             # Output: future output_weeks (clicks only)
-            y_window = group.iloc[i+input_weeks:i+input_weeks+output_weeks][['clicks']].values
+            y_window = group.iloc[i + input_weeks : i + input_weeks + output_weeks][
+                ["clicks"]
+            ].values
 
             X_list.append(X_window)
             y_list.append(y_window)
@@ -153,14 +163,22 @@ def create_sequences(df: pd.DataFrame,
     return X, y, student_ids
 
 
-def normalize_features(X_train: np.ndarray,
-                       X_val: np.ndarray,
-                       X_test: np.ndarray,
-                       y_train: np.ndarray,
-                       y_val: np.ndarray,
-                       y_test: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray,
-                                                      np.ndarray, np.ndarray, np.ndarray,
-                                                      Dict[str, Tuple[float, float]]]:
+def normalize_features(
+    X_train: np.ndarray,
+    X_val: np.ndarray,
+    X_test: np.ndarray,
+    y_train: np.ndarray,
+    y_val: np.ndarray,
+    y_test: np.ndarray,
+) -> Tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    Dict[str, Tuple[float, float]],
+]:
     """
     Normalize features using training set statistics.
 
@@ -188,22 +206,27 @@ def normalize_features(X_train: np.ndarray,
     y_test_norm = (y_test - y_mean) / y_std
 
     # Store normalization stats
-    norm_stats = {
-        'X_mean': X_mean,
-        'X_std': X_std,
-        'y_mean': y_mean,
-        'y_std': y_std
-    }
+    norm_stats = {"X_mean": X_mean, "X_std": X_std, "y_mean": y_mean, "y_std": y_std}
 
-    return X_train_norm, X_val_norm, X_test_norm, y_train_norm, y_val_norm, y_test_norm, norm_stats
+    return (
+        X_train_norm,
+        X_val_norm,
+        X_test_norm,
+        y_train_norm,
+        y_val_norm,
+        y_test_norm,
+        norm_stats,
+    )
 
 
-def load_and_preprocess_data(data_path: str,
-                            input_weeks: int = 4,
-                            output_weeks: int = 2,
-                            test_size: float = 0.2,
-                            val_size: float = 0.1,
-                            random_seed: int = 42) -> Dict:
+def load_and_preprocess_data(
+    data_path: str,
+    input_weeks: int = 4,
+    output_weeks: int = 2,
+    test_size: float = 0.2,
+    val_size: float = 0.1,
+    random_seed: int = 42,
+) -> Dict:
     """
     Complete data loading and preprocessing pipeline.
 
@@ -262,8 +285,11 @@ def load_and_preprocess_data(data_path: str,
     )
 
     return {
-        'X_train': X_train, 'y_train': y_train,
-        'X_val': X_val, 'y_val': y_val,
-        'X_test': X_test, 'y_test': y_test,
-        'norm_stats': norm_stats
+        "X_train": X_train,
+        "y_train": y_train,
+        "X_val": X_val,
+        "y_val": y_val,
+        "X_test": X_test,
+        "y_test": y_test,
+        "norm_stats": norm_stats,
     }
