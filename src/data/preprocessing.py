@@ -51,9 +51,33 @@ def aggregate_weekly_features(
     Returns:
         DataFrame with student_id, week, and all features
     """
-    # Convert date to week number
-    student_vle["week"] = student_vle["date"] // 7
-    student_assessment["week"] = student_assessment["date_submitted"] // 7
+    # Debug: Print actual column names
+    print(f"student_vle columns: {list(student_vle.columns)}")
+    print(f"student_assessment columns: {list(student_assessment.columns)}")
+
+    # Convert date to week number - handle different possible column names
+    # For student_vle
+    if "date" in student_vle.columns:
+        student_vle["week"] = student_vle["date"] // 7
+    else:
+        raise KeyError(
+            f"Expected 'date' column not found in student_vle. Available columns: {list(student_vle.columns)}"
+        )
+
+    # For student_assessment - check multiple possible date column names
+    date_col = None
+    possible_date_cols = ["date_submitted", "date", "submission_date"]
+    for col in possible_date_cols:
+        if col in student_assessment.columns:
+            date_col = col
+            break
+
+    if date_col is None:
+        raise KeyError(
+            f"No date column found in student_assessment. Available columns: {list(student_assessment.columns)}. Expected one of: {possible_date_cols}"
+        )
+
+    student_assessment["week"] = student_assessment[date_col] // 7
 
     # Aggregate clicks per student per week
     clicks_df = (
