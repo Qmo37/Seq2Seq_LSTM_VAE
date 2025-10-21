@@ -162,7 +162,9 @@ Adjustable hyperparameters:
 
 **Console Output Evidence:**
 
-See [`results/screenshot_evaluation_colab.png`](results/screenshot_evaluation_colab.png) for complete evaluation output including Top-5 cases, win-rate distribution, and final metrics from the actual Google Colab run.
+![Evaluation Output Screenshot](results/screenshot_evaluation_colab.png)
+
+Complete evaluation output including Top-5 cases, win-rate distribution, and final metrics from the actual Google Colab run.
 
 ### Key Findings
 
@@ -256,16 +258,3 @@ The project generates four comprehensive comparison plots:
 **When to Use Each Model:**
 - **LSTM**: When you need a single, fast, reliable prediction
 - **VAE**: When you need to explore multiple possible futures, assess uncertainty, or can afford 20× inference cost for better best-case accuracy
-
-## Submission Format
-
-1. **Code**: Colab notebook with both LSTM and VAE models
-2. **Analysis**: Word document containing:
-   - Model comparison (MSE, Best-of-N, Coverage, Diversity)
-   - Visualization results
-   - Advantages and disadvantages discussion
-3. **Submission**: GitHub repository link
-
-## License
-
-This project is for educational purposes.
