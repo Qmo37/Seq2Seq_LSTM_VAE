@@ -1,907 +1,1187 @@
 """
-Seq2Seq LSTM vs VAE for Learning Behavior Prediction - Tutorial Script
+Seq2Seq LSTM vs VAE for Learning Behavior Prediction - Complete Tutorial Script
 
-This script compares two sequence generation models on the Open University
-Learning Analytics Dataset (OULAD):
+This script matches the current Seq2Seq_LSTM_VAE.ipynb notebook structure and provides
+a complete end-to-end workflow for comparing two sequence generation models on the
+Open University Learning Analytics Dataset (OULAD):
+
 - Seq2Seq LSTM: Deterministic single-path prediction
 - Seq2Seq VAE: Probabilistic multi-path generation
 
-The tutorial is structured to help you understand:
-1. How to load and preprocess educational time-series data
-2. How to implement and train sequence-to-sequence models
-3. How to evaluate deterministic vs probabilistic models
-4. How to interpret and visualize the results
+Key Features:
+1. Comprehensive data preprocessing with OULAD dataset
+2. Model training with history tracking
+3. Detailed evaluation with win-rate analysis
+4. Four publication-quality visualizations
 
 Author: Educational ML Project
 Dataset: Open University Learning Analytics Dataset (OULAD)
+Last Updated: 2025
 """
 
 # =============================================================================
 # SECTION 1: IMPORTS AND ENVIRONMENT SETUP
 # =============================================================================
 
-# Standard library imports for system operations
 import os
 import sys
 import json
+import warnings
+import random
 
-# Add the 'src' directory to Python path so we can import our custom modules
-# This allows us to use 'from data import ...' instead of 'from src.data import ...'
-sys.path.append('src')
+# Add src to path
+sys.path.append("src")
 
-# Core scientific computing libraries
-import torch  # PyTorch for deep learning
-import numpy as np  # Numerical operations
-import pandas as pd  # Data manipulation and analysis
-import matplotlib.pyplot as plt  # Visualization
+# Core libraries
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from tqdm import tqdm
 
-# PyTorch utilities for data handling
-from torch.utils.data import DataLoader
+# PyTorch
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
 
-# Import our custom modules from the src/ directory
-# These modules contain the core functionality for our experiment
-from data import load_and_preprocess_data, LearningBehaviorDataset
-from models import Seq2SeqLSTM, Seq2SeqVAE
-from utils import (
-    train_lstm,  # Training loop for LSTM model
-    train_vae,   # Training loop for VAE model
-    set_seed,    # Set random seeds for reproducibility
-    evaluate_model,  # Comprehensive model evaluation
-    plot_training_curves,  # Visualize training progress
-    plot_comparison,       # Compare model performance
-    plot_diversity_analysis  # Analyze VAE diversity
-)
+# Suppress warnings
+warnings.filterwarnings("ignore")
 
-# Set matplotlib style for better-looking plots
-# 'seaborn-v0_8-darkgrid' provides a professional, publication-ready appearance
-plt.style.use('seaborn-v0_8-darkgrid')
+# Set matplotlib style
+plt.style.use("seaborn-v0_8-darkgrid")
 
-print("="*80)
-print("Seq2Seq LSTM vs VAE Tutorial")
-print("="*80)
+print("=" * 80)
+print("Seq2Seq LSTM vs VAE Tutorial - Complete Workflow")
+print("=" * 80)
 print("\nAll imports successful!")
 
 # =============================================================================
-# SECTION 2: CONFIGURATION AND HYPERPARAMETERS
+# SECTION 2: CONFIGURATION
 # =============================================================================
 
-"""
-Configuration Dictionary Explanation:
-
-This dictionary contains all hyperparameters for our experiment. Some are fixed
-(as per assignment requirements), while others can be adjusted for experimentation.
-
-FIXED HYPERPARAMETERS (DO NOT CHANGE):
-- batch_size: 128 - Number of sequences processed together
-- learning_rate: 1e-3 - Step size for gradient descent
-- random_seed: 42 - Ensures reproducibility
-- input_weeks: 4 - Number of past weeks used for prediction
-- output_weeks: 2 - Number of future weeks to predict
-
-ADJUSTABLE HYPERPARAMETERS (CAN EXPERIMENT):
-- epochs: Number of training passes through the dataset
-- hidden_size: LSTM hidden state dimension (larger = more capacity)
-- latent_dim: VAE latent space dimension (controls bottleneck)
-- beta: VAE KL divergence weight (controls diversity vs accuracy trade-off)
-- n_samples: Number of VAE samples for evaluation
-"""
-
 CONFIG = {
-    # -------------------------------------------------------------------------
-    # Data Configuration
-    # -------------------------------------------------------------------------
-    'data_path': 'data/raw',  # Directory containing OULAD CSV files
-    'input_weeks': 4,   # How many weeks of history to use as input
-    'output_weeks': 2,  # How many weeks into the future to predict
-
-    # -------------------------------------------------------------------------
-    # Training Configuration (Fixed Requirements)
-    # -------------------------------------------------------------------------
-    'batch_size': 128,  # Number of sequences per training batch
-                        # Larger = faster but more memory; smaller = slower but less memory
-
-    'learning_rate': 1e-3,  # Adam optimizer learning rate (0.001)
-                            # Controls how big the parameter update steps are
-
-    'epochs': 20,  # Number of complete passes through training data
-                   # ADJUSTABLE: Try 5-30+ depending on convergence
-
-    'random_seed': 42,  # Random seed for reproducibility
-                        # Using same seed = same results every run
-
-    # -------------------------------------------------------------------------
-    # Model Architecture (Adjustable)
-    # -------------------------------------------------------------------------
-    'hidden_size': 64,  # Dimension of LSTM hidden state
-                        # ADJUSTABLE: Larger (128, 256) = more capacity but slower
-                        # Smaller (32) = faster but less expressive
-
-    'latent_dim': 16,  # VAE latent space dimension
-                       # ADJUSTABLE: Controls bottleneck size
-                       # Larger = more information preserved
-                       # Smaller = stronger compression/regularization
-
-    'num_layers': 1,  # Number of stacked LSTM layers
-                      # ADJUSTABLE: More layers = deeper model
-
-    'dropout': 0.0,  # Dropout probability (0 = no dropout)
-                     # ADJUSTABLE: Use 0.1-0.3 to prevent overfitting
-
-    # -------------------------------------------------------------------------
-    # VAE-Specific Configuration
-    # -------------------------------------------------------------------------
-    'beta': 1.0,  # Weight for KL divergence loss in VAE
-                  # ADJUSTABLE: This is crucial for diversity vs accuracy trade-off
-                  # beta < 1.0: Prioritize reconstruction (less diversity)
-                  # beta = 1.0: Standard VAE (balanced)
-                  # beta > 1.0: Prioritize diversity (worse reconstruction)
-
-    # -------------------------------------------------------------------------
-    # Evaluation Configuration
-    # -------------------------------------------------------------------------
-    'n_samples': 20,  # How many samples to generate per input for VAE evaluation
-                      # Used for Best-of-N metric and diversity analysis
-                      # ADJUSTABLE: More samples = better Best-of-N but slower
-
-    # -------------------------------------------------------------------------
-    # Device Configuration
-    # -------------------------------------------------------------------------
-    'device': 'cuda' if torch.cuda.is_available() else 'cpu'  # Use GPU if available
+    # Data
+    "data_path": "data/raw",
+    "input_weeks": 4,
+    "output_weeks": 2,
+    # Training (Fixed)
+    "batch_size": 128,
+    "learning_rate": 1e-3,
+    "epochs": 20,
+    "random_seed": 42,
+    # Model Architecture
+    "hidden_size": 64,
+    "latent_dim": 16,
+    "num_layers": 1,
+    "dropout": 0.0,
+    # VAE
+    "beta": 1.0,
+    # Evaluation
+    "n_samples": 20,
+    # Device
+    "device": "cuda" if torch.cuda.is_available() else "cpu",
 }
 
-# Print configuration for transparency
-print("\n" + "="*80)
-print("EXPERIMENT CONFIGURATION")
-print("="*80)
+print("\n" + "=" * 80)
+print("CONFIGURATION")
+print("=" * 80)
 for key, value in CONFIG.items():
     print(f"  {key:20s}: {value}")
-print("="*80)
+print("=" * 80)
+
+# Set random seeds
+random.seed(CONFIG["random_seed"])
+np.random.seed(CONFIG["random_seed"])
+torch.manual_seed(CONFIG["random_seed"])
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(CONFIG["random_seed"])
+
+device = torch.device(CONFIG["device"])
+print(f"\nUsing device: {device}")
 
 # =============================================================================
 # SECTION 3: DATA LOADING AND PREPROCESSING
 # =============================================================================
 
-"""
-Data Pipeline Overview:
-
-The OULAD dataset contains raw student interaction logs. We transform this into
-sequences suitable for time-series prediction:
-
-1. Load CSV files: studentInfo, studentVle, studentAssessment
-2. Aggregate daily logs into weekly features:
-   - clicks: Total weekly clicks from VLE interactions
-   - has_submit: Binary indicator of submission (0 or 1)
-   - avg_score_sofar: Cumulative average score up to current week
-   - clicks_diff1: First-order difference of clicks
-3. Create sequences using sliding window:
-   - Input X: 4 consecutive weeks × 4 features = (batch, 4, 4)
-   - Output y: Next 2 weeks of clicks only = (batch, 2, 1)
-4. Split by student ID (not randomly!) to prevent data leakage
-5. Normalize using training set statistics only
-"""
-
-print("\n" + "="*80)
+print("\n" + "=" * 80)
 print("STEP 1: DATA LOADING AND PREPROCESSING")
-print("="*80)
+print("=" * 80)
 
-# Set random seed BEFORE any random operations to ensure reproducibility
-# This affects: data splitting, weight initialization, dropout, etc.
-set_seed(CONFIG['random_seed'])
-print(f"\nRandom seed set to {CONFIG['random_seed']} for reproducibility")
 
-# Load and preprocess the OULAD dataset
-# This function handles all the complex preprocessing steps mentioned above
-print("\nLoading and preprocessing OULAD dataset...")
-print("  - Reading CSV files from data/raw/")
-print("  - Aggregating daily logs into weekly features")
-print("  - Creating sliding window sequences")
-print("  - Splitting by student ID (train/val/test)")
-print("  - Normalizing features using training statistics")
+def load_and_process_oulad():
+    """Load and process OULAD dataset into weekly features"""
+    print("\nLoading OULAD data...")
 
-data = load_and_preprocess_data(
-    data_path=CONFIG['data_path'],
-    input_weeks=CONFIG['input_weeks'],
-    output_weeks=CONFIG['output_weeks'],
-    random_seed=CONFIG['random_seed']
-)
+    student_info = pd.read_csv("data/raw/studentInfo.csv")
+    student_vle = pd.read_csv("data/raw/studentVle.csv")
+    student_assessment = pd.read_csv("data/raw/studentAssessment.csv")
 
-# Display dataset shapes to verify preprocessing
-# Expected shapes:
-# X: (num_sequences, input_weeks, num_features) = (N, 4, 4)
-# y: (num_sequences, output_weeks, 1) = (N, 2, 1)
-print("\n" + "-"*80)
-print("Dataset Shapes:")
-print("-"*80)
-print(f"  Training:   X={data['X_train'].shape}, y={data['y_train'].shape}")
-print(f"  Validation: X={data['X_val'].shape}, y={data['y_val'].shape}")
-print(f"  Test:       X={data['X_test'].shape}, y={data['y_test'].shape}")
-print("-"*80)
+    print(
+        f"Loaded: Info={student_info.shape}, VLE={student_vle.shape}, Assessment={student_assessment.shape}"
+    )
 
-# Interpretation guide for the shapes
-print("\nShape Interpretation:")
-print(f"  - Each sequence has {data['X_train'].shape[1]} weeks of input")
-print(f"  - Each week has {data['X_train'].shape[2]} features")
-print(f"  - We predict {data['y_train'].shape[1]} weeks into the future")
-print(f"  - We predict {data['y_train'].shape[2]} feature(s) (clicks only)")
+    # Process VLE data
+    vle_date_col = "date" if "date" in student_vle.columns else student_vle.columns[1]
+    student_vle["week"] = student_vle[vle_date_col] // 7
 
-# =============================================================================
-# SECTION 4: CREATE PYTORCH DATALOADERS
-# =============================================================================
+    # Process assessment data
+    if "date_submitted" in student_assessment.columns:
+        student_assessment["week"] = student_assessment["date_submitted"] // 7
+    elif "date" in student_assessment.columns:
+        student_assessment["week"] = student_assessment["date"] // 7
+    else:
+        student_assessment["week"] = 0
 
-"""
-DataLoader Explanation:
+    # Aggregate clicks
+    click_col = "sum_click" if "sum_click" in student_vle.columns else "clicks"
+    clicks_df = (
+        student_vle.groupby(["id_student", "week"])[click_col].sum().reset_index()
+    )
+    clicks_df.columns = ["id_student", "week", "clicks"]
 
-PyTorch DataLoaders handle batching and shuffling of data during training.
-They automatically:
-1. Group sequences into batches for efficient GPU computation
-2. Shuffle training data each epoch to prevent overfitting
-3. Load data in parallel using multiple workers (optional)
+    # Process scores
+    if "score" in student_assessment.columns:
+        if student_assessment["score"].dtype == "object":
+            score_map = {"Pass": 70, "Fail": 30, "Distinction": 85, "Withdrawn": 0}
+            student_assessment["score"] = (
+                student_assessment["score"].map(score_map).fillna(0)
+            )
 
-Why shuffle training but not validation/test?
-- Training: Shuffling prevents the model from learning order-dependent patterns
-- Val/Test: We want consistent evaluation, so no shuffling needed
-"""
+        submit_df = (
+            student_assessment.groupby(["id_student", "week"])["score"]
+            .agg(["count", "mean"])
+            .reset_index()
+        )
+        submit_df.columns = ["id_student", "week", "submit_cnt", "avg_score"]
+    else:
+        submit_df = pd.DataFrame(
+            columns=["id_student", "week", "submit_cnt", "avg_score"]
+        )
 
-print("\n" + "="*80)
-print("STEP 2: CREATING PYTORCH DATALOADERS")
-print("="*80)
+    # Create complete grid
+    all_students = student_info["id_student"].unique()
+    all_weeks = []
+    for student in all_students:
+        for week in range(30):
+            all_weeks.append({"id_student": student, "week": week})
 
-# Wrap numpy arrays in PyTorch Dataset objects
-# This provides a standard interface for DataLoader
-train_dataset = LearningBehaviorDataset(data['X_train'], data['y_train'])
-val_dataset = LearningBehaviorDataset(data['X_val'], data['y_val'])
-test_dataset = LearningBehaviorDataset(data['X_test'], data['y_test'])
+    df = pd.DataFrame(all_weeks)
 
-# Create DataLoaders for efficient batching
-# shuffle=True for training: Randomize batch order each epoch
-# shuffle=False for val/test: Consistent evaluation order
-train_loader = DataLoader(
-    train_dataset,
-    batch_size=CONFIG['batch_size'],
-    shuffle=True  # Randomize order for better training
-)
-val_loader = DataLoader(
-    val_dataset,
-    batch_size=CONFIG['batch_size'],
-    shuffle=False  # Fixed order for consistent validation
-)
-test_loader = DataLoader(
-    test_dataset,
-    batch_size=CONFIG['batch_size'],
-    shuffle=False  # Fixed order for consistent testing
-)
+    # Merge features
+    df = df.merge(clicks_df, on=["id_student", "week"], how="left")
+    if not submit_df.empty:
+        df = df.merge(submit_df, on=["id_student", "week"], how="left")
+    else:
+        df["submit_cnt"] = 0
+        df["avg_score"] = 0
 
-print(f"\nDataLoaders created successfully!")
-print(f"  Training batches:   {len(train_loader)} (shuffled)")
-print(f"  Validation batches: {len(val_loader)} (not shuffled)")
-print(f"  Test batches:       {len(test_loader)} (not shuffled)")
-print(f"\nBatch size: {CONFIG['batch_size']} sequences per batch")
+    df.fillna(0, inplace=True)
+    df = df.sort_values(["id_student", "week"]).reset_index(drop=True)
+
+    # Derived features
+    df["has_submit"] = (df["submit_cnt"] > 0).astype(int)
+    df["avg_score_sofar"] = (
+        df.groupby("id_student")["avg_score"].expanding().mean().values
+    )
+    df["clicks_diff1"] = df.groupby("id_student")["clicks"].diff().fillna(0)
+
+    print(f"Created weekly features: {df.shape}")
+    print(f"Average clicks per week: {df['clicks'].mean():.1f}")
+
+    return df
+
+
+weekly_df = load_and_process_oulad()
 
 # =============================================================================
-# SECTION 5: TRAIN SEQ2SEQ LSTM MODEL
+# SECTION 4: CREATE SEQUENCES
 # =============================================================================
 
-"""
-Seq2Seq LSTM Architecture:
-
-The LSTM model uses an encoder-decoder architecture:
-
-1. ENCODER:
-   - Reads input sequence (4 weeks × 4 features)
-   - Compresses information into hidden state vector
-   - This hidden state is a fixed-size representation of the entire input
-
-2. DECODER:
-   - Starts with the encoder's final hidden state
-   - Generates output sequence autoregressively (one step at a time)
-   - Each step's output becomes the next step's input
-   - Produces deterministic predictions (same input → same output)
-
-Key characteristics:
-- Deterministic: No randomness, always produces same prediction
-- Single-path: Only one possible future sequence
-- Fast inference: No need to sample multiple times
-- Simple to interpret: Direct mapping from input to output
-
-Loss function: Mean Squared Error (MSE)
-- Measures average squared difference between prediction and ground truth
-- Good for regression tasks like predicting click counts
-"""
-
-print("\n" + "="*80)
-print("STEP 3: TRAINING SEQ2SEQ LSTM MODEL")
-print("="*80)
-
-# Determine input size from data shape
-# This is the number of features per time step (4 features in our case)
-input_size = data['X_train'].shape[2]
-
-# Initialize the LSTM model with specified architecture
-print("\nInitializing Seq2Seq LSTM model...")
-lstm_model = Seq2SeqLSTM(
-    input_size=input_size,      # Number of input features (4)
-    hidden_size=CONFIG['hidden_size'],  # Hidden state dimension (64)
-    output_size=1,              # Number of output features (1 = clicks only)
-    num_layers=CONFIG['num_layers'],    # Number of stacked LSTM layers
-    dropout=CONFIG['dropout']   # Dropout probability for regularization
-)
-
-# Display model architecture
-print("\n" + "-"*80)
-print("LSTM Model Architecture:")
-print("-"*80)
-print(lstm_model)
-
-# Count total trainable parameters
-# This tells us how complex the model is
-total_params = sum(p.numel() for p in lstm_model.parameters())
-print(f"\nTotal trainable parameters: {total_params:,}")
-print(f"  (More parameters = more capacity but slower training)")
-print("-"*80)
-
-# Train the LSTM model
-# This function handles the entire training loop:
-# - Forward pass (compute predictions)
-# - Loss calculation (compare to ground truth)
-# - Backward pass (compute gradients)
-# - Parameter updates (apply gradients)
-# - Validation after each epoch
-print("\nStarting LSTM training...")
-print(f"  Epochs: {CONFIG['epochs']}")
-print(f"  Learning rate: {CONFIG['learning_rate']}")
-print(f"  Device: {CONFIG['device']}")
-
-lstm_history = train_lstm(
-    model=lstm_model,
-    train_loader=train_loader,
-    val_loader=val_loader,
-    epochs=CONFIG['epochs'],
-    lr=CONFIG['learning_rate'],
-    device=CONFIG['device'],
-    output_weeks=CONFIG['output_weeks']
-)
-
-# Save trained model for later use
-# This allows us to load the model without retraining
-os.makedirs('results/checkpoints', exist_ok=True)
-torch.save(lstm_model.state_dict(), 'results/checkpoints/lstm_model.pt')
-print("\n✓ LSTM model trained and saved to results/checkpoints/lstm_model.pt")
-
-# =============================================================================
-# SECTION 6: TRAIN SEQ2SEQ VAE MODEL
-# =============================================================================
-
-"""
-Seq2Seq VAE Architecture:
-
-The VAE (Variational Autoencoder) extends the LSTM with probabilistic modeling:
-
-1. ENCODER:
-   - Reads input sequence (4 weeks × 4 features)
-   - Outputs TWO vectors: μ (mean) and log σ² (log variance)
-   - These define a probability distribution over latent space
-
-2. REPARAMETERIZATION TRICK:
-   - Sample latent vector: z = μ + σ * ε, where ε ~ N(0,1)
-   - This trick allows backpropagation through the sampling operation
-   - Key insight: randomness comes from ε, gradients flow through μ and σ
-
-3. DECODER:
-   - Takes sampled latent vector z
-   - Generates output sequence autoregressively
-   - Different samples of z produce different outputs
-
-Key characteristics:
-- Probabilistic: Samples from learned distribution
-- Multi-path: Can generate diverse future sequences
-- Slower inference: Need multiple samples for diversity
-- Uncertainty quantification: Spread of samples indicates confidence
-
-Loss function: Reconstruction + β * KL Divergence
-- Reconstruction: MSE between prediction and ground truth (accuracy)
-- KL Divergence: Similarity to standard normal N(0,1) (regularization)
-- β parameter: Controls trade-off between accuracy and diversity
-  - β < 1: Prioritize accuracy (less diversity)
-  - β = 1: Standard VAE (balanced)
-  - β > 1: Prioritize diversity (less accuracy)
-"""
-
-print("\n" + "="*80)
-print("STEP 4: TRAINING SEQ2SEQ VAE MODEL")
-print("="*80)
-
-# Initialize the VAE model
-print("\nInitializing Seq2Seq VAE model...")
-vae_model = Seq2SeqVAE(
-    input_size=input_size,      # Number of input features (4)
-    hidden_size=CONFIG['hidden_size'],  # Hidden state dimension (64)
-    latent_dim=CONFIG['latent_dim'],    # Latent space dimension (16)
-    output_size=1,              # Number of output features (1 = clicks only)
-    num_layers=CONFIG['num_layers'],    # Number of stacked LSTM layers
-    dropout=CONFIG['dropout']   # Dropout probability
-)
-
-# Display model architecture
-print("\n" + "-"*80)
-print("VAE Model Architecture:")
-print("-"*80)
-print(vae_model)
-
-# Count total trainable parameters
-total_params = sum(p.numel() for p in vae_model.parameters())
-print(f"\nTotal trainable parameters: {total_params:,}")
-print(f"  (VAE has more parameters than LSTM due to latent space projection)")
-print("-"*80)
-
-# Train the VAE model
-print("\nStarting VAE training...")
-print(f"  Epochs: {CONFIG['epochs']}")
-print(f"  Learning rate: {CONFIG['learning_rate']}")
-print(f"  Beta (KL weight): {CONFIG['beta']}")
-print(f"  Device: {CONFIG['device']}")
-print("\nNote: VAE training may take longer than LSTM due to:")
-print("  1. More parameters to update")
-print("  2. Additional KL divergence computation")
-print("  3. Reparameterization trick overhead")
-
-vae_history = train_vae(
-    model=vae_model,
-    train_loader=train_loader,
-    val_loader=val_loader,
-    epochs=CONFIG['epochs'],
-    lr=CONFIG['learning_rate'],
-    device=CONFIG['device'],
-    output_weeks=CONFIG['output_weeks'],
-    beta=CONFIG['beta']  # Controls diversity vs accuracy trade-off
-)
-
-# Save trained VAE model
-torch.save(vae_model.state_dict(), 'results/checkpoints/vae_model.pt')
-print("\n✓ VAE model trained and saved to results/checkpoints/vae_model.pt")
-
-# =============================================================================
-# SECTION 7: VISUALIZE TRAINING CURVES
-# =============================================================================
-
-"""
-Training Curve Analysis:
-
-Training curves help us understand model learning behavior:
-
-1. TRAINING LOSS:
-   - Should decrease over time
-   - Measures how well model fits training data
-   - If not decreasing: learning rate too high/low, or bad initialization
-
-2. VALIDATION LOSS:
-   - Should decrease and stabilize
-   - Measures generalization to unseen data
-   - If increasing while train loss decreases: OVERFITTING!
-
-3. VAE-SPECIFIC LOSSES:
-   - Total loss = Reconstruction loss + β * KL divergence
-   - Reconstruction: Similar to LSTM loss (accuracy)
-   - KL divergence: Regularization term (prevents collapse)
-   - Monitor both to ensure balance
-
-Warning signs:
-- Val loss increasing: Model is overfitting to training data
-- Loss plateaus early: Learning rate too low or model capacity too small
-- Loss oscillates wildly: Learning rate too high
-- KL divergence near zero: VAE posterior collapse (bad!)
-"""
-
-print("\n" + "="*80)
-print("STEP 5: VISUALIZING TRAINING CURVES")
-print("="*80)
-
-# Create directory for saving figures
-os.makedirs('results/figures', exist_ok=True)
-
-# Generate comprehensive training curve plots
-print("\nGenerating training curve comparison...")
-plot_training_curves(
-    lstm_history=lstm_history,
-    vae_history=vae_history,
-    save_path='results/figures/training_curves.png'
-)
-
-print("✓ Training curves saved to results/figures/training_curves.png")
-print("\nWhat to look for in training curves:")
-print("  1. Both losses should decrease over time")
-print("  2. Validation loss should not diverge from training loss")
-print("  3. VAE loss may be higher due to KL divergence penalty")
-print("  4. Smooth curves indicate stable training")
-
-# =============================================================================
-# SECTION 8: EVALUATE LSTM MODEL
-# =============================================================================
-
-"""
-LSTM Evaluation:
-
-For deterministic models like LSTM, we measure:
-
-1. MSE (Mean Squared Error):
-   - Average squared difference between prediction and ground truth
-   - Lower is better
-   - Formula: MSE = mean((y_pred - y_true)²)
-   - Interpretation: Average prediction error in squared units
-
-Since LSTM is deterministic (same input → same output), we only get:
-- One prediction per input
-- No diversity metrics
-- No uncertainty quantification
-- No coverage statistics
-
-This simplicity makes LSTM:
-+ Easier to interpret
-+ Faster to evaluate
-- But lacks uncertainty information
-"""
-
-print("\n" + "="*80)
-print("STEP 6: EVALUATING LSTM ON TEST SET")
-print("="*80)
-
-print("\nRunning LSTM evaluation...")
-print("  - Generating predictions for all test sequences")
-print("  - Computing MSE against ground truth")
-print("  - This may take a moment...")
-
-lstm_results = evaluate_model(
-    model=lstm_model,
-    data_loader=test_loader,
-    device=CONFIG['device'],
-    output_weeks=CONFIG['output_weeks'],
-    is_vae=False  # LSTM is not a VAE
-)
-
-# Display LSTM results
-print("\n" + "-"*80)
-print("LSTM TEST RESULTS")
-print("-"*80)
-print(f"  Mean Squared Error (MSE): {lstm_results['mse']:.6f}")
-print("-"*80)
-
-print("\nInterpretation:")
-print(f"  - On average, LSTM predictions are off by √{lstm_results['mse']:.6f} = {np.sqrt(lstm_results['mse']):.3f} clicks")
-print("  - This is a deterministic prediction (no uncertainty)")
-print("  - Same input will always produce same output")
-
-# =============================================================================
-# SECTION 9: EVALUATE VAE MODEL
-# =============================================================================
-
-"""
-VAE Evaluation:
-
-For probabilistic models like VAE, we measure multiple aspects:
-
-1. MSE (Mean Squared Error):
-   - Use MEAN of samples as prediction
-   - Comparable to LSTM's single prediction
-   - May be higher than LSTM due to diversity penalty
-
-2. Best-of-N MSE:
-   - Take BEST prediction among N samples
-   - Shows VAE's potential when allowed multiple attempts
-   - Should be LOWER than mean MSE
-   - Interpretation: "If we could pick the best future, how good would it be?"
-
-3. Diversity (Standard Deviation):
-   - Measures variation across samples
-   - Higher = more diverse predictions
-   - Low diversity suggests posterior collapse (bad)
-   - Interpretation: "How much do predictions vary?"
-
-4. Coverage (95% Confidence Interval):
-   - Proportion of ground truth within 95% CI of samples
-   - Ideal value: ~0.95 (well-calibrated uncertainty)
-   - < 0.95: Under-confident (too diverse)
-   - > 0.95: Over-confident (too certain)
-   - Interpretation: "Does uncertainty match reality?"
-
-The VAE evaluation requires:
-- Multiple samples per input (default: 20)
-- More computation time than LSTM
-- But provides rich uncertainty information
-"""
-
-print("\n" + "="*80)
-print("STEP 7: EVALUATING VAE ON TEST SET")
-print("="*80)
-
-print("\nRunning VAE evaluation...")
-print(f"  - Generating {CONFIG['n_samples']} samples per test sequence")
-print("  - Computing multiple metrics (MSE, Best-of-N, Diversity, Coverage)")
-print("  - This will take longer than LSTM evaluation...")
-
-vae_results = evaluate_model(
-    model=vae_model,
-    data_loader=test_loader,
-    device=CONFIG['device'],
-    output_weeks=CONFIG['output_weeks'],
-    n_samples=CONFIG['n_samples'],  # Generate multiple samples
-    is_vae=True  # VAE requires special handling
-)
-
-# Display VAE results with detailed explanations
-print("\n" + "-"*80)
-print("VAE TEST RESULTS")
-print("-"*80)
-print(f"  Mean Squared Error (MSE):     {vae_results['mse']:.6f}")
-print(f"    └─ Using mean of {CONFIG['n_samples']} samples as prediction")
-print(f"\n  Best-of-N MSE:                {vae_results['best_of_n_mse']:.6f}")
-print(f"    └─ Best prediction among {CONFIG['n_samples']} samples")
-print(f"\n  Diversity (Std Dev):          {vae_results['diversity']:.6f}")
-print(f"    └─ Standard deviation across samples")
-print(f"\n  Coverage (95% CI):            {vae_results['coverage']:.4f}")
-print(f"    └─ Proportion of ground truth within 95% confidence interval")
-print("-"*80)
-
-print("\nInterpretation:")
-print(f"  - Mean prediction error: √{vae_results['mse']:.6f} = {np.sqrt(vae_results['mse']):.3f} clicks")
-print(f"  - Best possible prediction: √{vae_results['best_of_n_mse']:.6f} = {np.sqrt(vae_results['best_of_n_mse']):.3f} clicks")
-print(f"  - Diversity indicates {'high' if vae_results['diversity'] > 10 else 'moderate' if vae_results['diversity'] > 5 else 'low'} variation in predictions")
-
-# Interpret coverage metric
-if vae_results['coverage'] < 0.90:
-    print(f"  - Coverage ({vae_results['coverage']:.2f}) is LOW → VAE is under-confident (too diverse)")
-elif vae_results['coverage'] > 0.98:
-    print(f"  - Coverage ({vae_results['coverage']:.2f}) is HIGH → VAE is over-confident (too certain)")
-else:
-    print(f"  - Coverage ({vae_results['coverage']:.2f}) is well-calibrated → Good uncertainty estimation!")
-
-# =============================================================================
-# SECTION 10: COMPARE MODELS
-# =============================================================================
-
-"""
-Model Comparison Framework:
-
-When comparing LSTM and VAE, we need to consider multiple dimensions:
-
-1. ACCURACY (Single Prediction):
-   - LSTM MSE vs VAE MSE (mean)
-   - Lower is better
-   - LSTM often wins here due to deterministic optimization
-
-2. POTENTIAL (Multiple Attempts):
-   - LSTM MSE vs VAE Best-of-N MSE
-   - VAE often wins here due to diversity
-   - Relevant for applications where you can try multiple scenarios
-
-3. UNCERTAINTY QUANTIFICATION:
-   - LSTM: No uncertainty information (deterministic)
-   - VAE: Provides confidence intervals via sample spread
-   - Critical for risk-sensitive applications
-
-4. COMPUTATIONAL COST:
-   - LSTM: Fast (one forward pass per prediction)
-   - VAE: Slower (N forward passes for N samples)
-
-5. INTERPRETABILITY:
-   - LSTM: Clear input→output mapping
-   - VAE: Probabilistic interpretation requires more care
-
-Choose LSTM when:
-- Need single best prediction
-- Computational efficiency is critical
-- Deterministic behavior is preferred
-- Simple interpretation is needed
-
-Choose VAE when:
-- Need uncertainty estimates
-- Want to explore multiple scenarios
-- Risk assessment is important
-- Diversity in predictions is valuable
-"""
-
-print("\n" + "="*80)
-print("STEP 8: MODEL COMPARISON AND ANALYSIS")
-print("="*80)
-
-# Create comprehensive comparison visualization
-print("\nGenerating model comparison plots...")
-plot_comparison(
-    lstm_results=lstm_results,
-    vae_results=vae_results,
-    save_path='results/figures/model_comparison.png'
-)
-print("✓ Comparison plots saved to results/figures/model_comparison.png")
-
-# Create VAE-specific diversity analysis
-print("\nGenerating VAE diversity analysis...")
-plot_diversity_analysis(
-    vae_samples=vae_results['samples'],
-    targets=vae_results['targets'],
-    save_path='results/figures/diversity_analysis.png'
-)
-print("✓ Diversity analysis saved to results/figures/diversity_analysis.png")
-
-# =============================================================================
-# SECTION 11: CREATE SUMMARY TABLE
-# =============================================================================
-
-"""
-Summary Table Creation:
-
-This table provides a side-by-side comparison of all metrics for easy
-interpretation and reporting.
-
-Key comparisons to analyze:
-1. LSTM MSE vs VAE MSE: Which is more accurate for single predictions?
-2. VAE Best-of-N vs LSTM MSE: Can VAE beat LSTM with multiple attempts?
-3. VAE Diversity: Is the model generating diverse predictions?
-4. VAE Coverage: Are uncertainty estimates well-calibrated?
-
-For your report, discuss:
-- Why might one model outperform the other?
-- What's the practical trade-off?
-- When would you choose each model?
-"""
-
-print("\n" + "="*80)
-print("STEP 9: CREATING SUMMARY TABLE")
-print("="*80)
-
-# Create pandas DataFrame for easy formatting
-summary = pd.DataFrame({
-    'Metric': [
-        'MSE',
-        'Best-of-N MSE',
-        'Diversity',
-        'Coverage'
-    ],
-    'LSTM': [
-        f"{lstm_results['mse']:.6f}",
-        'N/A',  # LSTM is deterministic, no multi-path generation
-        '0.000 (deterministic)',  # No variation
-        'N/A'   # No uncertainty quantification
-    ],
-    'VAE': [
-        f"{vae_results['mse']:.6f}",
-        f"{vae_results['best_of_n_mse']:.6f}",
-        f"{vae_results['diversity']:.6f}",
-        f"{vae_results['coverage']:.4f}"
-    ]
-})
-
-# Display formatted table
-print("\n" + "="*80)
-print("MODEL COMPARISON SUMMARY")
-print("="*80)
-print(summary.to_string(index=False))
-print("="*80)
-
-# Provide interpretation guidance
-print("\n📊 How to interpret this table:")
-print("\n1. MSE Comparison:")
-if lstm_results['mse'] < vae_results['mse']:
-    print(f"   → LSTM wins by {vae_results['mse'] - lstm_results['mse']:.6f}")
-    print("   → LSTM is more accurate for single-path prediction")
-else:
-    print(f"   → VAE wins by {lstm_results['mse'] - vae_results['mse']:.6f}")
-    print("   → VAE maintains accuracy despite diversity penalty")
-
-print("\n2. Best-of-N Analysis:")
-if vae_results['best_of_n_mse'] < lstm_results['mse']:
-    print(f"   → VAE's best prediction beats LSTM by {lstm_results['mse'] - vae_results['best_of_n_mse']:.6f}")
-    print("   → VAE's diversity provides better best-case performance")
-else:
-    print(f"   → LSTM still better than VAE's best by {vae_results['best_of_n_mse'] - lstm_results['mse']:.6f}")
-    print("   → Diversity doesn't compensate for accuracy loss")
-
-print("\n3. Diversity & Uncertainty:")
-print(f"   → VAE generates diverse predictions (std={vae_results['diversity']:.3f})")
-print(f"   → Uncertainty calibration: {vae_results['coverage']:.1%} coverage")
-
-# =============================================================================
-# SECTION 12: SAVE RESULTS FOR REPORT
-# =============================================================================
-
-"""
-Results Export:
-
-We export results in two formats:
-
-1. JSON (results_summary.json):
-   - Machine-readable format
-   - Contains all configuration and results
-   - Useful for programmatic analysis
-
-2. CSV (comparison_table.csv):
-   - Human-readable format
-   - Easy to copy into Word/Excel
-   - Good for report tables
-
-These files can be used to:
-- Write the assignment report
-- Create additional visualizations
-- Perform further analysis
-- Document experiment settings
-"""
-
-print("\n" + "="*80)
-print("STEP 10: SAVING RESULTS FOR REPORT")
-print("="*80)
-
-# Create results directory if it doesn't exist
-os.makedirs('results', exist_ok=True)
-
-# Prepare comprehensive results dictionary
-results_summary = {
-    # Include all configuration for reproducibility
-    'config': CONFIG,
-
-    # LSTM results
-    'lstm': {
-        'mse': float(lstm_results['mse']),  # Convert to Python float for JSON
-        'n_parameters': sum(p.numel() for p in lstm_model.parameters())
-    },
-
-    # VAE results (more comprehensive)
-    'vae': {
-        'mse': float(vae_results['mse']),
-        'best_of_n_mse': float(vae_results['best_of_n_mse']),
-        'diversity': float(vae_results['diversity']),
-        'coverage': float(vae_results['coverage']),
-        'n_parameters': sum(p.numel() for p in vae_model.parameters())
+print("\n" + "=" * 80)
+print("STEP 2: CREATING SEQUENCES")
+print("=" * 80)
+
+
+def create_sequences(df, input_weeks=4, output_weeks=2):
+    """Create sliding window sequences"""
+    feature_cols = ["clicks", "has_submit", "avg_score_sofar", "clicks_diff1"]
+
+    X_list = []
+    y_list = []
+    student_list = []
+
+    print("\nCreating sequences...")
+    for student_id, group in tqdm(df.groupby("id_student")):
+        group = group.sort_values("week").reset_index(drop=True)
+
+        if len(group) < input_weeks + output_weeks:
+            continue
+
+        for i in range(len(group) - input_weeks - output_weeks + 1):
+            X_window = group.iloc[i : i + input_weeks][feature_cols].values
+            y_window = group.iloc[i + input_weeks : i + input_weeks + output_weeks][
+                ["clicks"]
+            ].values
+
+            X_list.append(X_window)
+            y_list.append(y_window)
+            student_list.append(student_id)
+
+    X = np.array(X_list, dtype=np.float32)
+    y = np.array(y_list, dtype=np.float32)
+    student_ids = np.array(student_list)
+
+    print(f"Created {len(X)} sequences")
+    print(f"Input shape: {X.shape}")
+    print(f"Output shape: {y.shape}")
+
+    return X, y, student_ids
+
+
+def split_and_normalize(X, y, student_ids):
+    """Split by students and normalize"""
+    print("\nSplitting data by student ID...")
+
+    unique_students = np.unique(student_ids)
+    train_students, test_students = train_test_split(
+        unique_students, test_size=0.2, random_state=42
+    )
+    train_students, val_students = train_test_split(
+        train_students, test_size=0.1, random_state=42
+    )
+
+    train_mask = np.isin(student_ids, train_students)
+    val_mask = np.isin(student_ids, val_students)
+    test_mask = np.isin(student_ids, test_students)
+
+    X_train, y_train = X[train_mask], y[train_mask]
+    X_val, y_val = X[val_mask], y[val_mask]
+    X_test, y_test = X[test_mask], y[test_mask]
+
+    print(f"Train: {len(X_train)}, Val: {len(X_val)}, Test: {len(X_test)}")
+
+    # Normalize
+    X_mean = X_train.mean(axis=(0, 1), keepdims=True)
+    X_std = X_train.std(axis=(0, 1), keepdims=True) + 1e-8
+    y_mean = y_train.mean()
+    y_std = y_train.std() + 1e-8
+
+    X_train = (X_train - X_mean) / X_std
+    X_val = (X_val - X_mean) / X_std
+    X_test = (X_test - X_mean) / X_std
+
+    y_train = (y_train - y_mean) / y_std
+    y_val = (y_val - y_mean) / y_std
+    y_test = (y_test - y_mean) / y_std
+
+    print("Data normalized successfully")
+
+    return {
+        "X_train": X_train,
+        "y_train": y_train,
+        "X_val": X_val,
+        "y_val": y_val,
+        "X_test": X_test,
+        "y_test": y_test,
+        "norm_stats": {"y_mean": y_mean, "y_std": y_std},
     }
+
+
+X, y, student_ids = create_sequences(weekly_df)
+data = split_and_normalize(X, y, student_ids)
+
+# =============================================================================
+# SECTION 5: DEFINE MODELS AND DATASET
+# =============================================================================
+
+print("\n" + "=" * 80)
+print("STEP 3: DEFINING MODELS")
+print("=" * 80)
+
+
+class LearningBehaviorDataset(Dataset):
+    def __init__(self, X, y):
+        self.X = torch.FloatTensor(X)
+        self.y = torch.FloatTensor(y)
+
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self, idx):
+        return self.X[idx], self.y[idx]
+
+
+class Seq2SeqLSTM(nn.Module):
+    def __init__(self, input_size, hidden_size, output_size):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.output_size = output_size
+
+        self.encoder = nn.LSTM(input_size, hidden_size, batch_first=True)
+        self.decoder = nn.LSTM(output_size, hidden_size, batch_first=True)
+        self.output_proj = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x, tgt_len):
+        batch_size = x.size(0)
+
+        _, (hidden, cell) = self.encoder(x)
+
+        decoder_input = torch.zeros(batch_size, 1, self.output_size, device=x.device)
+        outputs = []
+
+        for t in range(tgt_len):
+            decoder_output, (hidden, cell) = self.decoder(decoder_input, (hidden, cell))
+            output = self.output_proj(decoder_output)
+            outputs.append(output)
+            decoder_input = output
+
+        return torch.cat(outputs, dim=1)
+
+
+class Seq2SeqVAE(nn.Module):
+    def __init__(self, input_size, hidden_size, latent_dim, output_size):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.latent_dim = latent_dim
+        self.output_size = output_size
+
+        self.encoder = nn.LSTM(input_size, hidden_size, batch_first=True)
+        self.mu_proj = nn.Linear(hidden_size, latent_dim)
+        self.logvar_proj = nn.Linear(hidden_size, latent_dim)
+
+        self.decoder = nn.LSTM(output_size + latent_dim, hidden_size, batch_first=True)
+        self.output_proj = nn.Linear(hidden_size, output_size)
+
+    def encode(self, x):
+        _, (hidden, _) = self.encoder(x)
+        mu = self.mu_proj(hidden[-1])
+        logvar = self.logvar_proj(hidden[-1])
+        return mu, logvar
+
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def decode(self, z, tgt_len):
+        batch_size = z.size(0)
+        decoder_input = torch.zeros(batch_size, 1, self.output_size, device=z.device)
+        z_expanded = z.unsqueeze(1)
+
+        outputs = []
+        hidden = None
+
+        for t in range(tgt_len):
+            decoder_input_with_z = torch.cat([decoder_input, z_expanded], dim=-1)
+            decoder_output, hidden = self.decoder(decoder_input_with_z, hidden)
+            output = self.output_proj(decoder_output)
+            outputs.append(output)
+            decoder_input = output
+
+        return torch.cat(outputs, dim=1)
+
+    def forward(self, x, tgt_len):
+        mu, logvar = self.encode(x)
+        z = self.reparameterize(mu, logvar)
+        recon = self.decode(z, tgt_len)
+        return recon, mu, logvar
+
+
+print("Models defined successfully!")
+
+# Create DataLoaders
+print("\nCreating DataLoaders...")
+train_dataset = LearningBehaviorDataset(data["X_train"], data["y_train"])
+val_dataset = LearningBehaviorDataset(data["X_val"], data["y_val"])
+test_dataset = LearningBehaviorDataset(data["X_test"], data["y_test"])
+
+train_loader = DataLoader(train_dataset, batch_size=CONFIG["batch_size"], shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=CONFIG["batch_size"], shuffle=False)
+test_loader = DataLoader(test_dataset, batch_size=CONFIG["batch_size"], shuffle=False)
+
+print(
+    f"Train batches: {len(train_loader)}, Val: {len(val_loader)}, Test: {len(test_loader)}"
+)
+
+# =============================================================================
+# SECTION 6: TRAIN LSTM MODEL
+# =============================================================================
+
+print("\n" + "=" * 80)
+print("STEP 4: TRAINING LSTM MODEL")
+print("=" * 80)
+
+lstm_model = Seq2SeqLSTM(
+    input_size=4, hidden_size=CONFIG["hidden_size"], output_size=1
+).to(device)
+optimizer = optim.Adam(lstm_model.parameters(), lr=CONFIG["learning_rate"])
+
+lstm_train_losses = []
+lstm_val_losses = []
+
+print("\nTraining LSTM...")
+for epoch in range(CONFIG["epochs"]):
+    # Training
+    lstm_model.train()
+    total_train_loss = 0
+
+    for X_batch, y_batch in train_loader:
+        X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+
+        optimizer.zero_grad()
+        outputs = lstm_model(X_batch, CONFIG["output_weeks"])
+        loss = F.mse_loss(outputs, y_batch)
+        loss.backward()
+        optimizer.step()
+
+        total_train_loss += loss.item()
+
+    avg_train_loss = total_train_loss / len(train_loader)
+    lstm_train_losses.append(avg_train_loss)
+
+    # Validation
+    lstm_model.eval()
+    total_val_loss = 0
+    with torch.no_grad():
+        for X_batch, y_batch in val_loader:
+            X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+            outputs = lstm_model(X_batch, CONFIG["output_weeks"])
+            loss = F.mse_loss(outputs, y_batch)
+            total_val_loss += loss.item()
+
+    avg_val_loss = total_val_loss / len(val_loader)
+    lstm_val_losses.append(avg_val_loss)
+
+    if (epoch + 1) % 5 == 0:
+        print(
+            f"LSTM Epoch {epoch + 1}/{CONFIG['epochs']}: Train={avg_train_loss:.6f}, Val={avg_val_loss:.6f}"
+        )
+
+print("LSTM training completed!")
+
+# =============================================================================
+# SECTION 7: TRAIN VAE MODEL
+# =============================================================================
+
+print("\n" + "=" * 80)
+print("STEP 5: TRAINING VAE MODEL")
+print("=" * 80)
+
+vae_model = Seq2SeqVAE(
+    input_size=4,
+    hidden_size=CONFIG["hidden_size"],
+    latent_dim=CONFIG["latent_dim"],
+    output_size=1,
+).to(device)
+optimizer = optim.Adam(vae_model.parameters(), lr=CONFIG["learning_rate"])
+
+vae_train_losses = []
+vae_val_losses = []
+vae_train_mse = []
+vae_train_kld = []
+
+print("\nTraining VAE...")
+for epoch in range(CONFIG["epochs"]):
+    # Training
+    vae_model.train()
+    total_train_loss = 0
+    total_mse = 0
+    total_kld = 0
+
+    for X_batch, y_batch in train_loader:
+        X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+
+        optimizer.zero_grad()
+        recon, mu, logvar = vae_model(X_batch, CONFIG["output_weeks"])
+
+        mse_loss = F.mse_loss(recon, y_batch)
+        kl_loss = (
+            -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) / y_batch.numel()
+        )
+        loss = mse_loss + CONFIG["beta"] * kl_loss
+
+        loss.backward()
+        optimizer.step()
+
+        total_train_loss += loss.item()
+        total_mse += mse_loss.item()
+        total_kld += kl_loss.item()
+
+    avg_train_loss = total_train_loss / len(train_loader)
+    avg_mse = total_mse / len(train_loader)
+    avg_kld = total_kld / len(train_loader)
+
+    vae_train_losses.append(avg_train_loss)
+    vae_train_mse.append(avg_mse)
+    vae_train_kld.append(avg_kld)
+
+    # Validation
+    vae_model.eval()
+    total_val_loss = 0
+    with torch.no_grad():
+        for X_batch, y_batch in val_loader:
+            X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+            recon, mu, logvar = vae_model(X_batch, CONFIG["output_weeks"])
+            mse_loss = F.mse_loss(recon, y_batch)
+            kl_loss = (
+                -0.5
+                * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+                / y_batch.numel()
+            )
+            loss = mse_loss + CONFIG["beta"] * kl_loss
+            total_val_loss += loss.item()
+
+    avg_val_loss = total_val_loss / len(val_loader)
+    vae_val_losses.append(avg_val_loss)
+
+    if (epoch + 1) % 5 == 0:
+        print(
+            f"VAE Epoch {epoch + 1}/{CONFIG['epochs']}: Train={avg_train_loss:.6f} (MSE={avg_mse:.6f}, KLD={avg_kld:.6f}), Val={avg_val_loss:.6f}"
+        )
+
+print("VAE training completed!")
+
+# =============================================================================
+# SECTION 8: EVALUATE MODELS
+# =============================================================================
+
+print("\n" + "=" * 80)
+print("STEP 6: EVALUATING MODELS")
+print("=" * 80)
+
+
+def evaluate_models_detailed():
+    """Comprehensive model evaluation with detailed analysis"""
+    lstm_model.eval()
+    vae_model.eval()
+
+    lstm_predictions = []
+    vae_predictions = []
+    vae_samples = []
+    targets = []
+
+    print("\nEvaluating models...")
+
+    with torch.no_grad():
+        for X_batch, y_batch in test_loader:
+            X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+
+            lstm_pred = lstm_model(X_batch, CONFIG["output_weeks"])
+            lstm_predictions.append(lstm_pred.cpu().numpy())
+
+            vae_pred, _, _ = vae_model(X_batch, CONFIG["output_weeks"])
+            vae_predictions.append(vae_pred.cpu().numpy())
+
+            mu, logvar = vae_model.encode(X_batch)
+            batch_samples = []
+            for _ in range(CONFIG["n_samples"]):
+                z = vae_model.reparameterize(mu, logvar)
+                sample = vae_model.decode(z, CONFIG["output_weeks"])
+                batch_samples.append(sample.cpu().numpy())
+            vae_samples.append(np.array(batch_samples))
+
+            targets.append(y_batch.cpu().numpy())
+
+    lstm_preds = np.concatenate(lstm_predictions)
+    vae_preds = np.concatenate(vae_predictions)
+    vae_samples = np.concatenate(vae_samples, axis=1)
+    all_targets = np.concatenate(targets)
+
+    # Calculate per-sample MSE
+    lstm_mse_per_sample = np.mean((lstm_preds - all_targets) ** 2, axis=(1, 2))
+    vae_mse_per_sample = np.mean((vae_preds - all_targets) ** 2, axis=(1, 2))
+
+    # VAE Best-of-N per sample
+    vae_best_mse_per_sample = []
+    for i in range(len(all_targets)):
+        sample_mses = []
+        for j in range(CONFIG["n_samples"]):
+            mse = np.mean((vae_samples[j, i] - all_targets[i]) ** 2)
+            sample_mses.append(mse)
+        vae_best_mse_per_sample.append(min(sample_mses))
+    vae_best_mse_per_sample = np.array(vae_best_mse_per_sample)
+
+    # Overall metrics
+    lstm_mse = lstm_mse_per_sample.mean()
+    vae_mse = vae_mse_per_sample.mean()
+    best_of_n_mse = vae_best_mse_per_sample.mean()
+
+    diversity = np.std(vae_samples, axis=0).mean()
+
+    lower = np.percentile(vae_samples, 2.5, axis=0)
+    upper = np.percentile(vae_samples, 97.5, axis=0)
+    coverage = np.mean((all_targets >= lower) & (all_targets <= upper))
+
+    # Top-5 Analysis
+    improvement = lstm_mse_per_sample - vae_best_mse_per_sample
+    top5_indices = np.argsort(-improvement)[:5]
+
+    print("\n" + "=" * 80)
+    print("Top-5 Cases (VAE Best >> LSTM)")
+    print("=" * 80)
+
+    top5_df = pd.DataFrame(
+        {
+            "idx": top5_indices,
+            "LSTM_MSE": lstm_mse_per_sample[top5_indices],
+            "VAE_best_MSE": vae_best_mse_per_sample[top5_indices],
+            "Improvement": improvement[top5_indices],
+        }
+    )
+    print(top5_df.to_string(index=False))
+
+    # Win-rate Analysis
+    print("\n" + "=" * 80)
+    print("Win-rate by Improvement Bucket")
+    print("=" * 80)
+
+    buckets = [
+        ("VAE worse >1000", lambda x: x < -1000),
+        ("VAE worse 200~1000", lambda x: (x >= -1000) & (x < -200)),
+        ("VAE worse 50~200", lambda x: (x >= -200) & (x < -50)),
+        ("VAE worse 10~50", lambda x: (x >= -50) & (x < -10)),
+        ("VAE slightly worse <10", lambda x: (x >= -10) & (x < 0)),
+        ("Tie ±10", lambda x: (x >= 0) & (x < 10)),
+        ("VAE better 10~50", lambda x: (x >= 10) & (x < 50)),
+        ("VAE better 50~200", lambda x: (x >= 50) & (x < 200)),
+        ("VAE better 200~1000", lambda x: (x >= 200) & (x < 1000)),
+        ("VAE much better >1000", lambda x: x >= 1000),
+    ]
+
+    bucket_stats = []
+    for bucket_name, condition in buckets:
+        mask = condition(improvement)
+        count = np.sum(mask)
+        ratio = count / len(improvement) if len(improvement) > 0 else 0
+        bucket_stats.append(
+            {"Bucket": bucket_name, "Count": count, "Ratio": f"{ratio:.4f}"}
+        )
+
+    bucket_df = pd.DataFrame(bucket_stats)
+    print(bucket_df.to_string(index=False))
+
+    # Final Results
+    print("\n" + "=" * 80)
+    print("FINAL EVALUATION RESULTS")
+    print("=" * 80)
+
+    y_std = data["norm_stats"]["y_std"]
+    lstm_mse_original = lstm_mse * (y_std**2)
+    vae_mse_original = vae_mse * (y_std**2)
+    best_of_n_original = best_of_n_mse * (y_std**2)
+
+    print(f"LSTM MSE:               {lstm_mse_original:.4f}")
+    print(
+        f"VAE Best-of-N MSE:      {best_of_n_original:.4f}  (N={CONFIG['n_samples']})"
+    )
+    print(f"VAE Diversity (std):    {diversity:.4f}")
+    print(f"VAE Coverage (95% CI):  {coverage:.4f}")
+    print("=" * 80)
+
+    return {
+        "lstm_mse": lstm_mse,
+        "vae_mse": vae_mse,
+        "vae_best_of_n_mse": best_of_n_mse,
+        "vae_diversity": diversity,
+        "vae_coverage": coverage,
+        "top5_df": top5_df,
+        "bucket_df": bucket_df,
+        "lstm_preds": lstm_preds,
+        "vae_all_samples": vae_samples,
+        "y_test": all_targets,
+        "lstm_mse_per_sample": lstm_mse_per_sample,
+    }
+
+
+eval_output = evaluate_models_detailed()
+
+# Extract metrics
+results = {
+    "lstm_mse": eval_output["lstm_mse"],
+    "vae_mse": eval_output["vae_mse"],
+    "vae_best_of_n_mse": eval_output["vae_best_of_n_mse"],
+    "vae_diversity": eval_output["vae_diversity"],
+    "vae_coverage": eval_output["vae_coverage"],
 }
 
-# Save as JSON for programmatic access
-with open('results/results_summary.json', 'w') as f:
+# Expose for visualizations
+lstm_preds = eval_output["lstm_preds"]
+vae_all_samples = eval_output["vae_all_samples"]
+y_test = eval_output["y_test"]
+lstm_mse_per_sample = eval_output["lstm_mse_per_sample"]
+
+print("\nEvaluation complete!")
+
+# =============================================================================
+# SECTION 9: VISUALIZATION 1 - TRAINING CURVES
+# =============================================================================
+
+print("\n" + "=" * 80)
+print("STEP 7: GENERATING VISUALIZATIONS")
+print("=" * 80)
+
+os.makedirs("results/figures", exist_ok=True)
+
+print("\n1. Training Curves...")
+
+fig, axes = plt.subplots(1, 2, figsize=(15, 5))
+
+# LSTM
+axes[0].plot(
+    range(1, 21), lstm_train_losses, "b-", linewidth=2, label="Train Loss", marker="o"
+)
+axes[0].plot(
+    range(1, 21), lstm_val_losses, "b--", linewidth=2, label="Val Loss", marker="s"
+)
+axes[0].set_xlabel("Epoch", fontsize=12)
+axes[0].set_ylabel("Loss (MSE)", fontsize=12)
+axes[0].set_title("LSTM Training Curves", fontsize=14, fontweight="bold")
+axes[0].legend(fontsize=11)
+axes[0].grid(True, alpha=0.3)
+
+# VAE
+axes[1].plot(
+    range(1, 21),
+    vae_train_losses,
+    "r-",
+    linewidth=2,
+    label="Train Loss (Total)",
+    marker="o",
+)
+axes[1].plot(
+    range(1, 21),
+    vae_val_losses,
+    "r--",
+    linewidth=2,
+    label="Val Loss (Total)",
+    marker="s",
+)
+axes[1].plot(
+    range(1, 21),
+    vae_train_mse,
+    "g-",
+    linewidth=1.5,
+    alpha=0.7,
+    label="Train MSE",
+    marker="^",
+)
+axes[1].plot(
+    range(1, 21),
+    vae_train_kld,
+    "orange",
+    linewidth=1.5,
+    alpha=0.7,
+    label="Train KLD",
+    marker="v",
+)
+axes[1].set_xlabel("Epoch", fontsize=12)
+axes[1].set_ylabel("Loss", fontsize=12)
+axes[1].set_title("VAE Training Curves", fontsize=14, fontweight="bold")
+axes[1].legend(fontsize=10)
+axes[1].grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig("results/figures/training_curves.png", dpi=300, bbox_inches="tight")
+plt.close()
+
+print("   Saved: training_curves.png")
+
+# =============================================================================
+# SECTION 10: VISUALIZATION 2 - SAMPLE PREDICTIONS
+# =============================================================================
+
+print("2. Sample Predictions...")
+
+np.random.seed(42)
+num_samples = 6
+sample_indices = np.random.choice(len(lstm_preds), num_samples, replace=False)
+
+fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+axes = axes.flatten()
+
+for idx, sample_idx in enumerate(sample_indices):
+    ax = axes[idx]
+
+    gt = y_test[sample_idx].flatten()
+    lstm_pred = lstm_preds[sample_idx].flatten()
+    vae_samples_for_this = vae_all_samples[:, sample_idx]
+
+    if vae_samples_for_this.ndim == 3:
+        vae_samples_for_this = vae_samples_for_this.squeeze(-1)
+
+    weeks = np.arange(1, len(gt) + 1)
+
+    # Plot VAE samples
+    for i in range(20):
+        ax.plot(weeks, vae_samples_for_this[i], color="red", alpha=0.15, linewidth=1)
+
+    # Plot predictions
+    ax.plot(
+        weeks, lstm_pred, "b-", linewidth=2.5, label="LSTM", marker="s", markersize=8
+    )
+    vae_mean = vae_samples_for_this.mean(axis=0)
+    ax.plot(
+        weeks, vae_mean, "r-", linewidth=2.5, label="VAE Mean", marker="^", markersize=8
+    )
+    ax.plot(
+        weeks, gt, "k-", linewidth=3, label="Ground Truth", marker="o", markersize=10
+    )
+
+    # Calculate MSE
+    lstm_mse = np.mean((gt - lstm_pred) ** 2)
+    vae_mse = np.mean((gt - vae_mean) ** 2)
+    vae_best_mse = min(
+        [np.mean((gt - vae_samples_for_this[i]) ** 2) for i in range(20)]
+    )
+
+    ax.set_xlabel("Week", fontsize=11)
+    ax.set_ylabel("Clicks (Normalized)", fontsize=11)
+    ax.set_title(
+        f"Sample {sample_idx}\nLSTM: {lstm_mse:.3f} | VAE: {vae_mse:.3f} | VAE Best: {vae_best_mse:.3f}",
+        fontsize=10,
+    )
+    ax.legend(fontsize=9, loc="best")
+    ax.grid(True, alpha=0.3)
+    ax.set_xticks([1, 2])
+
+plt.suptitle(
+    "Prediction Comparison: GT vs LSTM vs VAE", fontsize=16, fontweight="bold", y=1.00
+)
+plt.tight_layout()
+plt.savefig("results/figures/prediction_comparison.png", dpi=300, bbox_inches="tight")
+plt.close()
+
+print("   Saved: prediction_comparison.png")
+
+# =============================================================================
+# SECTION 11: VISUALIZATION 3 - DIVERSITY ANALYSIS
+# =============================================================================
+
+print("3. Diversity Analysis...")
+
+# Calculate diversity per sample
+diversity_per_sample = []
+for i in range(vae_all_samples.shape[1]):
+    samples = vae_all_samples[:, i]
+    if samples.ndim == 3:
+        samples = samples.squeeze(-1)
+    diversity = np.std(samples)
+    diversity_per_sample.append(diversity)
+
+diversity_per_sample = np.array(diversity_per_sample)
+
+fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+
+# Histogram
+axes[0, 0].hist(
+    diversity_per_sample, bins=50, color="orange", alpha=0.7, edgecolor="black"
+)
+axes[0, 0].axvline(
+    diversity_per_sample.mean(),
+    color="red",
+    linestyle="--",
+    linewidth=2,
+    label=f"Mean = {diversity_per_sample.mean():.4f}",
+)
+axes[0, 0].set_xlabel("Diversity (Std)", fontsize=12)
+axes[0, 0].set_ylabel("Frequency", fontsize=12)
+axes[0, 0].set_title("Distribution of VAE Diversity", fontsize=13, fontweight="bold")
+axes[0, 0].legend(fontsize=11)
+axes[0, 0].grid(True, alpha=0.3)
+
+# Box plot
+axes[0, 1].boxplot(
+    [diversity_per_sample],
+    vert=True,
+    patch_artist=True,
+    boxprops=dict(facecolor="lightblue", alpha=0.7),
+)
+axes[0, 1].set_ylabel("Diversity (Std)", fontsize=12)
+axes[0, 1].set_title("VAE Diversity Box Plot", fontsize=13, fontweight="bold")
+axes[0, 1].grid(True, alpha=0.3, axis="y")
+
+# Scatter: Diversity vs LSTM MSE
+axes[1, 0].scatter(
+    diversity_per_sample, lstm_mse_per_sample, alpha=0.3, c="purple", s=10
+)
+axes[1, 0].set_xlabel("VAE Diversity (Std)", fontsize=12)
+axes[1, 0].set_ylabel("LSTM MSE", fontsize=12)
+axes[1, 0].set_title("VAE Diversity vs LSTM MSE", fontsize=13, fontweight="bold")
+axes[1, 0].grid(True, alpha=0.3)
+
+# Diversity bins
+diversity_bins = [0, 0.1, 0.2, 0.5, 1.0, float("inf")]
+diversity_labels = ["0-0.1", "0.1-0.2", "0.2-0.5", "0.5-1.0", ">1.0"]
+diversity_binned = pd.cut(
+    diversity_per_sample, bins=diversity_bins, labels=diversity_labels
+)
+diversity_counts = diversity_binned.value_counts().sort_index()
+
+axes[1, 1].bar(
+    range(len(diversity_counts)),
+    diversity_counts.values,
+    color=["red", "orange", "yellow", "lightgreen", "green"],
+    alpha=0.7,
+    edgecolor="black",
+)
+axes[1, 1].set_xlabel("Diversity Range", fontsize=12)
+axes[1, 1].set_ylabel("Number of Samples", fontsize=12)
+axes[1, 1].set_title("VAE Diversity by Range", fontsize=13, fontweight="bold")
+axes[1, 1].set_xticks(range(len(diversity_counts)))
+axes[1, 1].set_xticklabels(diversity_labels, rotation=45)
+axes[1, 1].grid(True, alpha=0.3, axis="y")
+
+plt.suptitle("VAE Diversity Analysis", fontsize=16, fontweight="bold", y=0.995)
+plt.tight_layout()
+plt.savefig("results/figures/diversity_analysis.png", dpi=300, bbox_inches="tight")
+plt.close()
+
+print("   Saved: diversity_analysis.png")
+
+# =============================================================================
+# SECTION 12: VISUALIZATION 4 - COMPREHENSIVE DASHBOARD
+# =============================================================================
+
+print("4. Comprehensive Dashboard...")
+
+fig = plt.figure(figsize=(20, 12))
+gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
+
+# 1. MSE Comparison
+ax1 = fig.add_subplot(gs[0, 0])
+mse_data = [results["lstm_mse"], results["vae_mse"], results["vae_best_of_n_mse"]]
+bars = ax1.bar(
+    ["LSTM\nMSE", "VAE\nMean", "VAE\nBest-of-N"],
+    mse_data,
+    color=["blue", "red", "green"],
+    alpha=0.7,
+    edgecolor="black",
+    linewidth=2,
+)
+ax1.set_ylabel("MSE", fontsize=12, fontweight="bold")
+ax1.set_title("MSE Comparison", fontsize=13, fontweight="bold")
+ax1.grid(True, alpha=0.3, axis="y")
+for bar, value in zip(bars, mse_data):
+    ax1.text(
+        bar.get_x() + bar.get_width() / 2,
+        bar.get_height(),
+        f"{value:.4f}",
+        ha="center",
+        va="bottom",
+        fontsize=10,
+        fontweight="bold",
+    )
+
+# 2. VAE Metrics
+ax2 = fig.add_subplot(gs[0, 1])
+vae_metrics = [results["vae_diversity"], results["vae_coverage"]]
+bars = ax2.bar(
+    ["Diversity\n(Std)", "Coverage\n(95% CI)"],
+    vae_metrics,
+    color=["orange", "purple"],
+    alpha=0.7,
+    edgecolor="black",
+    linewidth=2,
+)
+ax2.set_ylabel("Value", fontsize=12, fontweight="bold")
+ax2.set_title("VAE Metrics", fontsize=13, fontweight="bold")
+ax2.grid(True, alpha=0.3, axis="y")
+for bar, value in zip(bars, vae_metrics):
+    ax2.text(
+        bar.get_x() + bar.get_width() / 2,
+        bar.get_height(),
+        f"{value:.3f}",
+        ha="center",
+        va="bottom",
+        fontsize=10,
+        fontweight="bold",
+    )
+
+# 3. Win Rate
+ax3 = fig.add_subplot(gs[0, 2])
+vae_best_mse_per_sample = []
+for i in range(len(y_test)):
+    sample_mses = [np.mean((y_test[i] - vae_all_samples[j, i]) ** 2) for j in range(20)]
+    vae_best_mse_per_sample.append(min(sample_mses))
+vae_best_mse_per_sample = np.array(vae_best_mse_per_sample)
+
+lstm_win = (lstm_mse_per_sample < vae_best_mse_per_sample).sum()
+vae_win = len(y_test) - lstm_win
+ax3.pie(
+    [lstm_win, vae_win],
+    labels=[
+        f"LSTM\n({100 * lstm_win / len(y_test):.1f}%)",
+        f"VAE\n({100 * vae_win / len(y_test):.1f}%)",
+    ],
+    colors=["blue", "red"],
+    autopct="%1.1f%%",
+    startangle=90,
+)
+ax3.set_title("Win Rate: Best Prediction", fontsize=13, fontweight="bold")
+
+# 4. Training Curves
+ax4 = fig.add_subplot(gs[1, :])
+epochs = range(1, 21)
+ax4.plot(epochs, lstm_train_losses, "b-", linewidth=2, label="LSTM Train", marker="o")
+ax4.plot(epochs, lstm_val_losses, "b--", linewidth=2, label="LSTM Val", marker="s")
+ax4.plot(epochs, vae_train_losses, "r-", linewidth=2, label="VAE Train", marker="o")
+ax4.plot(epochs, vae_val_losses, "r--", linewidth=2, label="VAE Val", marker="s")
+ax4.set_xlabel("Epoch", fontsize=12, fontweight="bold")
+ax4.set_ylabel("Loss", fontsize=12, fontweight="bold")
+ax4.set_title("Training Curves", fontsize=14, fontweight="bold")
+ax4.legend(fontsize=11)
+ax4.grid(True, alpha=0.3)
+
+# 5-6. Sample Predictions
+for i in range(2):
+    ax = fig.add_subplot(gs[2, i])
+    sample_idx = sample_indices[i]
+
+    gt = y_test[sample_idx].flatten()
+    lstm_pred = lstm_preds[sample_idx].flatten()
+    vae_samples_for_this = vae_all_samples[:, sample_idx]
+    if vae_samples_for_this.ndim == 3:
+        vae_samples_for_this = vae_samples_for_this.squeeze(-1)
+
+    weeks = np.arange(1, len(gt) + 1)
+
+    for j in range(20):
+        ax.plot(weeks, vae_samples_for_this[j], "r-", alpha=0.15, linewidth=1)
+
+    ax.plot(
+        weeks, lstm_pred, "b-", linewidth=2.5, label="LSTM", marker="s", markersize=8
+    )
+    ax.plot(
+        weeks,
+        vae_samples_for_this.mean(axis=0),
+        "r-",
+        linewidth=2.5,
+        label="VAE Mean",
+        marker="^",
+        markersize=8,
+    )
+    ax.plot(weeks, gt, "k-", linewidth=3, label="GT", marker="o", markersize=10)
+
+    ax.set_xlabel("Week", fontsize=11, fontweight="bold")
+    ax.set_ylabel("Clicks", fontsize=11, fontweight="bold")
+    ax.set_title(
+        f"Example {i + 1} (Sample {sample_idx})", fontsize=12, fontweight="bold"
+    )
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3)
+    ax.set_xticks([1, 2])
+
+# 7. Summary
+ax7 = fig.add_subplot(gs[2, 2])
+ax7.axis("off")
+summary_text = f"""
+MODEL COMPARISON
+
+LSTM:
+  MSE: {results["lstm_mse"]:.4f}
+  Win Rate: {100 * lstm_win / len(y_test):.1f}%
+
+VAE:
+  Mean MSE: {results["vae_mse"]:.4f}
+  Best-of-N: {results["vae_best_of_n_mse"]:.4f}
+  Diversity: {results["vae_diversity"]:.4f}
+  Coverage: {results["vae_coverage"]:.1%}
+  Win Rate: {100 * vae_win / len(y_test):.1f}%
+
+CONCLUSION:
+{"VAE Best-of-N wins" if results["vae_best_of_n_mse"] < results["lstm_mse"] else "LSTM wins"}
+"""
+ax7.text(
+    0.1,
+    0.5,
+    summary_text,
+    fontsize=11,
+    verticalalignment="center",
+    family="monospace",
+    fontweight="bold",
+    bbox=dict(boxstyle="round", facecolor="lightyellow", alpha=0.8),
+)
+
+plt.suptitle(
+    "Comprehensive Model Comparison Dashboard", fontsize=18, fontweight="bold", y=0.995
+)
+plt.savefig(
+    "results/figures/comprehensive_comparison.png", dpi=300, bbox_inches="tight"
+)
+plt.close()
+
+print("   Saved: comprehensive_comparison.png")
+
+# =============================================================================
+# SECTION 13: SAVE RESULTS
+# =============================================================================
+
+print("\n" + "=" * 80)
+print("STEP 8: SAVING RESULTS")
+print("=" * 80)
+
+os.makedirs("results/checkpoints", exist_ok=True)
+
+# Save models
+torch.save(lstm_model.state_dict(), "results/checkpoints/lstm_model.pt")
+torch.save(vae_model.state_dict(), "results/checkpoints/vae_model.pt")
+print("Models saved to results/checkpoints/")
+
+# Save results
+results_summary = {
+    "config": CONFIG,
+    "lstm": {
+        "mse": float(results["lstm_mse"]),
+        "n_parameters": sum(p.numel() for p in lstm_model.parameters()),
+    },
+    "vae": {
+        "mse": float(results["vae_mse"]),
+        "best_of_n_mse": float(results["vae_best_of_n_mse"]),
+        "diversity": float(results["vae_diversity"]),
+        "coverage": float(results["vae_coverage"]),
+        "n_parameters": sum(p.numel() for p in vae_model.parameters()),
+    },
+}
+
+with open("results/results_summary.json", "w") as f:
     json.dump(results_summary, f, indent=2)
-print("✓ Results saved to results/results_summary.json")
 
-# Save summary table as CSV for easy copying
-summary.to_csv('results/comparison_table.csv', index=False)
-print("✓ Comparison table saved to results/comparison_table.csv")
+print("Results saved to results/results_summary.json")
 
 # =============================================================================
-# SECTION 13: FINAL SUMMARY AND NEXT STEPS
+# FINAL SUMMARY
 # =============================================================================
 
-print("\n" + "="*80)
+print("\n" + "=" * 80)
 print("EXPERIMENT COMPLETE!")
-print("="*80)
+print("=" * 80)
 
-print("\n📁 Generated Files:")
-print("  1. results/checkpoints/lstm_model.pt - Trained LSTM model")
-print("  2. results/checkpoints/vae_model.pt - Trained VAE model")
-print("  3. results/figures/training_curves.png - Training progress visualization")
-print("  4. results/figures/model_comparison.png - Comprehensive comparison")
-print("  5. results/figures/diversity_analysis.png - VAE diversity analysis")
-print("  6. results/results_summary.json - All metrics in JSON format")
-print("  7. results/comparison_table.csv - Summary table for report")
+print("\nGenerated Files:")
+print("  1. results/figures/training_curves.png")
+print("  2. results/figures/prediction_comparison.png")
+print("  3. results/figures/diversity_analysis.png")
+print("  4. results/figures/comprehensive_comparison.png")
+print("  5. results/checkpoints/lstm_model.pt")
+print("  6. results/checkpoints/vae_model.pt")
+print("  7. results/results_summary.json")
 
-print("\n📝 Next Steps for Your Report:")
-print("  1. Copy figures from results/figures/ into your Word document")
-print("  2. Use results/comparison_table.csv for metrics table")
-print("  3. Discuss advantages/disadvantages of each model:")
-print("     - LSTM: Simple, fast, accurate for single prediction")
-print("     - VAE: Diverse, uncertainty-aware, better best-case")
-print("  4. Analyze when to use each model in practice:")
-print("     - LSTM: Production systems, real-time prediction")
-print("     - VAE: Risk analysis, scenario planning, uncertainty quantification")
+print("\nKey Findings:")
+print(f"  LSTM MSE:            {results['lstm_mse']:.6f}")
+print(f"  VAE Best-of-N MSE:   {results['vae_best_of_n_mse']:.6f}")
+print(f"  VAE Diversity:       {results['vae_diversity']:.6f}")
+print(f"  VAE Coverage:        {results['vae_coverage']:.4f}")
 
-print("\n🔬 Key Findings to Discuss:")
-print("  • Single-path accuracy comparison (LSTM MSE vs VAE MSE)")
-print("  • Multi-path potential (VAE Best-of-N)")
-print("  • Diversity-accuracy trade-off (controlled by β)")
-print("  • Uncertainty calibration (coverage metric)")
-print("  • Computational efficiency (inference time)")
+if results["vae_best_of_n_mse"] < results["lstm_mse"]:
+    improvement = (
+        (results["lstm_mse"] - results["vae_best_of_n_mse"]) / results["lstm_mse"] * 100
+    )
+    print(f"\n  VAE Best-of-N beats LSTM by {improvement:.1f}%")
+else:
+    print(f"\n  LSTM outperforms VAE Best-of-N")
 
-print("\n🎓 Learning Outcomes:")
-print("  ✓ Implemented encoder-decoder architecture")
-print("  ✓ Understood deterministic vs probabilistic modeling")
-print("  ✓ Applied VAE with reparameterization trick")
-print("  ✓ Evaluated beyond simple accuracy metrics")
-print("  ✓ Compared model trade-offs in realistic application")
-
-print("\n" + "="*80)
-print("Thank you for using this tutorial!")
-print("Good luck with your assignment!")
-print("="*80)
+print("\n" + "=" * 80)
+print("Tutorial Complete!")
+print("=" * 80)

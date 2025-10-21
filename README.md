@@ -149,13 +149,113 @@ Adjustable hyperparameters:
 - **Diversity**: Standard deviation across generated samples (VAE)
 - **Coverage**: Proportion of samples within confidence interval (VAE)
 
+## Experimental Results
+
+### Performance Comparison (Second Run - Original Scale)
+
+| Model | Metric | Value | Description |
+|-------|--------|-------|-------------|
+| **LSTM** | MSE | **3342.40** | Single-path prediction error |
+| **VAE** | Best-of-N MSE | **2575.28** | Best prediction among 20 samples |
+| **VAE** | Diversity (std) | **0.1853** | Sample variation (diversity metric) |
+| **VAE** | Coverage | **0.1940 (19.40%)** | Proportion within prediction range |
+
+**Console Output Evidence:**
+
+See [`results/screenshot_evaluation_colab.png`](results/screenshot_evaluation_colab.png) for complete evaluation output including Top-5 cases, win-rate distribution, and final metrics from the actual Google Colab run.
+
+### Key Findings
+
+**Surprising Result: VAE Outperforms LSTM in Best-of-N**
+- VAE Best-of-N MSE (2575.28) is **23% better** than LSTM MSE (3342.40)
+- This demonstrates VAE's ability to generate diverse predictions where at least one achieves superior accuracy
+
+**Win Rate Analysis (Δ = LSTM MSE - VAE Best MSE)**
+
+| Improvement Range | Sample Count | Ratio | Interpretation |
+|------------------|--------------|-------|----------------|
+| VAE差50~200 | 1 | 0.00% | VAE much worse |
+| VAE差10~50 | 11 | 0.01% | VAE slightly worse |
+| **平手±10** | **76,266** | **52.99%** | Comparable |
+| **VAE略勝10~50** | **67,531** | **46.92%** | VAE slightly better |
+| VAE勝50~200 | 113 | 0.08% | VAE much better |
+
+**Total test samples: 143,925**
+
+**Analysis:**
+- In **99.91% of cases**, LSTM and VAE perform within ±50 MSE
+- VAE shows **slight advantage in 47%** of samples (improvement 10~50)
+- Only **0.08%** show significant VAE advantage (>50 improvement)
+- **Key insight**: When generating 20 diverse samples, VAE can often find at least one better prediction than LSTM's single path
+
+### Top-5 Cases Where VAE Excels
+
+| Sample ID | LSTM MSE | VAE Best MSE | Improvement | Diversity |
+|-----------|----------|--------------|-------------|-----------|
+| 113967 | 280.15 | 118.58 | **+161.58** | 0.759 |
+| 17896 | 128.69 | 33.25 | **+95.43** | 0.846 |
+| 17895 | 537.43 | 462.61 | **+74.82** | 0.683 |
+| 51917 | 62.89 | 12.97 | **+49.92** | 0.821 |
+| 37482 | 67.70 | 19.18 | **+48.52** | 0.717 |
+
+**Observation**: Cases where VAE excels show **higher diversity** (0.68~0.85), suggesting that when VAE successfully generates diverse samples, it can explore better prediction paths.
+
 ## Visualization
 
-The project generates comparison plots showing:
-- Ground truth (actual future clicks)
-- LSTM single-path prediction
-- VAE multi-sample predictions (semi-transparent curves)
-- Confidence intervals and diversity analysis
+The project generates four comprehensive comparison plots:
+
+### 1. Training Curves
+![Training Curves](results/visualizations/training_curves.png)
+
+**Shows:**
+- LSTM and VAE training/validation loss over 20 epochs
+- VAE includes both MSE and KLD components
+- Both models converge smoothly without overfitting
+
+### 2. Prediction Comparison
+![Prediction Comparison](results/visualizations/prediction_comparison.png)
+
+**Shows:**
+- Ground truth (black line) vs LSTM (blue line) vs VAE samples (red semi-transparent lines × 20)
+- 6 randomly selected test cases
+- **Key observation**: VAE's 20 samples show moderate spread (not collapsed), with some samples closer to ground truth than LSTM
+
+### 3. Diversity Analysis
+![Diversity Analysis](results/visualizations/diversity_analysis.png)
+
+**Shows:**
+- Distribution of VAE diversity across all test samples
+- Histogram, box plot, scatter plot (diversity vs LSTM MSE)
+- Diversity bins breakdown
+- **Average diversity: 0.1853** indicates moderate mode collapse, but sufficient variation for Best-of-N advantage
+
+### 4. Comprehensive Comparison Dashboard
+![Comprehensive Comparison](results/visualizations/comprehensive_comparison.png)
+
+**Shows:**
+- MSE comparison bar chart (VAE Best-of-N wins)
+- VAE-specific metrics (diversity & coverage)
+- Win rate pie chart (47% VAE better, 53% comparable)
+- Combined training curves
+- Sample predictions with detailed MSE values
+- Summary statistics table
+
+### Interpretation
+
+**LSTM Advantages:**
+- Simpler architecture, faster inference (1× vs 20×)
+- More stable single prediction
+- Easier to explain to non-technical users
+
+**VAE Advantages (Demonstrated in Second Run):**
+- **Best-of-N strategy effective**: 23% improvement over LSTM
+- Provides uncertainty quantification (coverage ~19%)
+- Can explore multiple future scenarios
+- Useful when diversity matters more than single-path accuracy
+
+**When to Use Each Model:**
+- **LSTM**: When you need a single, fast, reliable prediction
+- **VAE**: When you need to explore multiple possible futures, assess uncertainty, or can afford 20× inference cost for better best-case accuracy
 
 ## Submission Format
 
